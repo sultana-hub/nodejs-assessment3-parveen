@@ -1,3 +1,5 @@
+
+
 <!DOCTYPE html>
 <html lang="en">
 
@@ -40,12 +42,12 @@
       <div class="col-lg-8 col-md-10">
         <div class="card login-card">
           <div class="row g-0">
-            <div class="col-md-6 d-none d-md-block">
+            <!-- <div class="col-md-6 d-none d-md-block">
               <img src="
               /images/login3.jpg" alt="login" class="w-100 login-image">
-            </div>
+            </div> -->
             <div class="col-md-6 bg-white p-5">
-              <h3 class="text-center mb-4">Admin Login</h3>
+              <h3 class="text-center mb-4">Login Here</h3>
 
               <% if (message && message.length > 0) { %>
                 <div class="alert alert-warning text-center">
@@ -53,7 +55,7 @@
                 </div>
               <% } %>
 
-              <form action="/admin/login" method="POST">
+              <form action="/login" method="POST">
                 <div class="mb-3">
                   <label for="email" class="form-label">Email address</label>
                   <input type="email" class="form-control" id="email" name="email" required>
@@ -66,7 +68,7 @@
                   <button type="submit" class="btn btn-primary">Login</button>
                 </div>
                 <div class="text-center">
-                  <small>Not registered yet? <a href="#" class="text-decoration-none">Register here</a></small>
+                  <small>Not registered yet? <a href="/register" class="text-decoration-none">Register here</a></small>
                 </div>
               </form>
             </div>

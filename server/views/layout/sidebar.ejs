@@ -1,0 +1,23 @@
+
+
+<!-- sidebar.ejs -->
+<div class="d-flex flex-column flex-shrink-0 p-3 text-white bg-dark h-100">
+    <a href="#" class="d-flex align-items-center mb-3 text-white text-decoration-none">
+        <i class="fas fa-user-cog me-2"></i>
+        <span class="fs-5"><%=user.role%></span>
+    </a>
+    <hr class="text-white">
+    <ul class="nav nav-pills flex-column mb-auto">
+            <% if(user.role === 'Admin') { %>
+            <li><a href="/user-list" class="nav-link text-white">Manage Users</a></li>
+        <% } %>
+
+        <% if(user.role === 'User') { %>
+            <li><a href="/blog-list" class="nav-link text-white">Manage Blog</a></li>
+        <% } %>
+
+        <% if(user.role === 'Admin' ) { %>
+            <li><a href="/admin/blog-list" class="nav-link text-white">View All Blogs</a></li>
+        <% } %>
+    </ul>
+</div>

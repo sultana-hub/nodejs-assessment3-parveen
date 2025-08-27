@@ -1,399 +1,527 @@
-const { UserModel, validateSchema, loginSchema } = require("../model/Users");
-const { ProfileModel } = require('../model/Profile')
-const PostModel = require('../model/post')
+
+const { UserModel, roles, loginSchema, validateSchema } = require('../model/user')
+const httpStatusCode = require('../helper/httpStatusCode')
 const bcrypt = require('bcryptjs');
-// const nodemailer = require('nodemailer');
-// const transporter = require('../config/EmailConfig')
-// const sendEmailAndPassword = require('../helper/sendEmailPassword');
-const httpStatusCode = require('../helper/httpStatusCode');
-const { hashedPassword, comparePassword } = require('../middleware/auth')
+const { hashedPassword, comparePassword } = require('../middleware/hashPasswors')
 const fs = require('fs');
 const path = require('path')
 const jwt = require('jsonwebtoken');
+const BlogModel = require('../model/blog');
 
 class AdminController {
 
-    async ejsAuthCheck(req, res, next) {
+
+    async registerpage(req, res) {
+
         try {
-            if (req.user) {
-                next()
-            } else {
-                res.redirect('/admin');//login page
+            const message = req.flash('message')
+            res.render('register', {
+                title: "Register",
+                message
+            });
+        } catch (error) {
+            console.error(error);
+            req.flash('message', "Internal server error");
+            res.redirect('/');
+        }
+
+    }
+
+
+    async register(req, res) {
+        try {
+            console.log("BODY RECEIVED:", req.body);
+            console.log("FILE RECEIVED:", req.file);
+
+            // if no file uploaded
+            if (!req.file) {
+                return res.status(httpStatusCode.BadRequest).json({
+                    status: false,
+                    message: "Avatar file is required",
+                });
             }
-        } catch (err) {
-            console.log(err)
+            let role = req.body.role;
+
+            // Map frontend values → backend roles
+            if (role.toLowerCase() === "user") role = "User";
+            if (role.toLowerCase() === "admin") role = "Admin";
+            const usersData = {
+                name: req.body.name,
+                email: req.body.email,
+                password: req.body.password, // plain password (will hash later)
+                role:
+                    req.body.role.charAt(0).toUpperCase() +
+                    req.body.role.slice(1).toLowerCase(),
+                avatar: req.file.path, //  store filename or full path
+            };
+
+            const { error, value } = validateSchema.validate(usersData);
+            if (error) {
+                return res.status(httpStatusCode.Unauthorized).json({
+                    message: error.details[0].message,
+                });
+            }
+
+            // Check duplicate email
+            const isExist = await UserModel.findOne({ email: value.email });
+            if (isExist) {
+                return res.status(httpStatusCode.BadRequest).json({
+                    status: false,
+                    message: "User already exists",
+                });
+            }
+
+            // Hash password before saving
+            value.password = await hashedPassword(value.password);
+
+            // Save user
+            const user = await UserModel.create(value);
+
+            // Generate JWT
+            const token = jwt.sign(
+                {
+                    _id: user._id,
+                    name: user.name,
+                    email: user.email,
+                    role: user.role,
+                },
+                process.env.JWT_SECRET_KEY,
+                { expiresIn: "36h" }
+            );
+            res.redirect('/')
+            // return res.status(httpStatusCode.Create).json({
+            //     message: "User created successfully. Credentials sent to email.",
+            //     data: user,
+            //     token: token,
+            // });
+        } catch (error) {
+            res.status(httpStatusCode.InternalServerError).json({
+                status: false,
+                message: error.message,
+            });
         }
     }
+
 
 
     async loginpage(req, res) {
         try {
-            const message = req.flash('message')
+            const message = req.flash('message');
             res.render('login', {
-                title: "login",
-                message,
-                user: req.user
-            })
-
+                title: "Login",
+                message
+            });
         } catch (error) {
             console.error(error);
             req.flash('message', "Internal server error");
+            res.redirect('/');
         }
     }
+
+
     async login(req, res) {
         try {
             const { error, value } = loginSchema.validate(req.body);
             if (error) {
                 req.flash('message', error.details[0].message);
-                return res.redirect('/admin');
+                return res.redirect('/');
             }
 
             const user = await UserModel.findOne({ email: value.email });
             if (!user) {
                 req.flash('message', "User not found");
-                return res.redirect('/admin');
+                return res.redirect('/');
             }
 
             const isMatch = await comparePassword(value.password, user.password);
             if (!isMatch) {
                 req.flash('message', "Invalid password");
-                return res.redirect('/admin');
+                return res.redirect('/');
             }
 
-            if (user.isAdmin !== 'admin') {
-                req.flash('message', "Please login with admin credentials");
-                return res.redirect('/admin');
-            }
-            // 5. Generate JWT Token
-            const token = jwt.sign({
-                _id: user._id,
-                name: user.name,
-                email: user.email,
-                phone: user.phone,
-                image: user.image
-            }, process.env.JWT_SECRET_KEY, { expiresIn: "4h" });
+            //  Access Token (short expiry)
+            const accessToken = jwt.sign(
+                {
+                    _id: user._id,
+                    name: user.name,
+                    email: user.email,
+                    role: user.role
+                },
+                process.env.JWT_SECRET_KEY,
+                { expiresIn: "15m" } // short lived
+            );
 
+            //  Refresh Token (longer expiry)
+            const refreshToken = jwt.sign(
+                { _id: user._id, email: user.email },
+                process.env.REFRESH_SECRET_KEY, // use a different secret
+                { expiresIn: "7d" } // valid for 7 days
+            );
 
-            // 5. Generate JWT Token
-            // const tokenPayload = {
-            //     _id: user._id,
-            //     name: user.name,
-            //     email: user.email,
-            //     phone: user.phone,
-            //     image: user.image
-            // };
+            //  Save refresh token in DB (optional: helps revoke tokens later)
+            user.refreshTokens = refreshToken;
+            await user.save();
 
-            // const token = jwt.sign(tokenPayload, process.env.JWT_SECRET_KEY, {
-            //     expiresIn: "4h"
-            // });
-            console.error(" token:", token);
-            // 6. Set cookie
-            res.cookie('usertoken', token, {
+            //  Set cookies
+            res.cookie("usertoken", accessToken, {
                 httpOnly: true,
-                secure: process.env.NODE_ENV === 'production',
-                sameSite: 'strict',
-                maxAge: 4 * 60 * 60 * 1000 // 4 hours
+                secure: process.env.NODE_ENV === "production",
+                sameSite: "strict",
+                maxAge: 15 * 60 * 1000 // 15 minutes
+            });
+
+            res.cookie("refreshtoken", refreshToken, {
+                httpOnly: true,
+                secure: process.env.NODE_ENV === "production",
+                sameSite: "strict",
+                maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
             });
 
             req.flash("message", "Welcome admin!");
-            return res.redirect('/admin/dashboard');
+            return res.redirect("/dashboard");
+
         } catch (err) {
             console.error(" Login error:", err);
-            req.flash('message', "Internal server error");
-            return res.redirect('/admin');
-        }
-    };
-
-
-    async dashboard(req, res) {
-        try {
-            const message = req.flash('Welcome to admin dashboard')
-            const user = await UserModel.find({ isAdmin: 'admin' });
-            // Get metrics
-            const totalUsers = await UserModel.countDocuments();
-            const totalProfiles = await ProfileModel.countDocuments();
-            const totalBlocked = await UserModel.countDocuments({ isBlock: true });
-            res.render('dashboard', {
-                title: "Admin Dashboard",
-                userdata: req.user,
-                user,
-                message,
-                totalUsers,
-                totalProfiles,
-                totalBlocked
-            });
-        } catch (error) {
-            console.error("Dashboard error:", error);
-            req.flash("message", "Failed to load dashboard");
-            return res.redirect("/admin");
+            req.flash("message", "Internal server error");
+            return res.redirect("/");
         }
     }
-
 
     async logout(req, res) {
         try {
-            res.clearCookie('usertoken');
-            return res.redirect('/admin')
-
+            // If you stored JWT in cookies
+            res.clearCookie("token");
+            // If you also used session
+            req.session.destroy(() => {
+                res.redirect("/?message=Logged out successfully");
+            });
         } catch (error) {
-            console.log(error.message);
-
+            console.error("Logout error:", error);
+            res.redirect("/?error=Something went wrong");
         }
-
     }
 
-    //  async userList(req, res) {
-    //         try {
-    //             const message = req.flash('Welcome to users list');
-    //             const users = await UserModel.find({ isAdmin: { $ne: 'admin' } });
-
-    //             res.render('users/list', {
-    //                 title: "User List",
-    //                 users,             //  This is the array to loop over
-    //                 user: req.user,    //  Logged-in admin user (used for profile etc.)
-    //                 message
-    //             });
-    //         } catch (error) {
-    //             console.error("List error:", error);
-    //             req.flash("message", "Failed to load users list");
-    //             return res.redirect("/admin/list");
-    //         }
-    //     }
-
-
-    // controller
-    async toggle_block(req, res) {
+    async dashboard(req, res) {
         try {
-            const user = await UserModel.findById(req.params.id);
-            if (!user) {
-                req.flash("message", "User not found");
-                return res.redirect("/admin/list");
-            }
+            //Logged-in user comes from JWT (middleware attached req.user)
+            const loggedInUser = req.user;
 
-            // Toggle the isBlock status
-            user.isBlock = !user.isBlock;
-            await user.save();
+            //  Use flash for dynamic message
+            req.flash("success", `Welcome to ${loggedInUser.role} dashboard`);
 
-            req.flash("message", `User has been ${user.isBlock ? "blocked" : "unblocked"}`);
-            res.redirect("/admin/user-list");
-        } catch (err) {
-            console.error("Toggle Block Error:", err);
-            req.flash("message", "Something went wrong");
-            res.redirect("/admin/user-list");
+            res.render("dashboard", {
+                title: `${loggedInUser.role} Dashboard`,
+                user: loggedInUser,   // only logged-in user
+                message: req.flash("success"),
+            });
+        } catch (error) {
+            console.error("Dashboard error:", error);
+            req.flash("error", "Failed to load dashboard");
+            return res.redirect("/");
         }
     }
-    //delete user
-    async deleteUser(req, res) {
-        const id = req.params.id
 
-    }
-    //searching 
 
     async getAllUsers(req, res) {
         try {
-            const message = req.flash('Welcome to users list');
-            const query = req.query.query;
-            let users = [];
+            // Fetch all users except the currently logged-in admin
+            const users = await UserModel.find({ _id: { $ne: req.user._id } });
 
-            if (query) {
-                const regex = new RegExp(query, 'i'); // case-insensitive
-                users = await UserModel.find({
-                    $or: [
-                        { name: regex },
-                        { email: regex }
-                    ]
-                });
-            } else {
-                users = await UserModel.find({ isAdmin: { $ne: 'admin' } });
-            }
+            // Flash message, if any
+            const message = req.flash('message');
 
+            // Render the user list page
             res.render('users/list', {
-                title: "User List",
+                title: "Manage Users",
                 users,
-                message
+                message,
+                user: req.user, // currently logged-in user
             });
         } catch (error) {
-            console.error("User list error:", error);
-            req.flash("message", "Something went wrong!");
-            return res.redirect("/admin/list");
+            console.error("Error fetching users:", error);
+            req.flash('message', "Failed to load users");
+            res.redirect('/dashboard');
         }
     }
-    // async getAllProfiles(req, res) {
-    //     try {
-    //         const message = req.flash('Welcome to Users Profile list');
-    //         const profiles = await ProfileModel.find().populate('user', 'name');
 
-    //         res.render('profiles/list', {
-    //             title: "Profile List",
-    //             profiles,             //  This is the array to loop over
-    //             user: req.user,    //  Logged-in admin user (used for profile etc.)
-    //             message
-    //         });
-    //     } catch (error) {
-    //         console.error("List error:", error);
-    //         req.flash("message", "Failed to load users list");
-    //         return res.redirect("/admin/profile-list");
-    //     }
-    // }
-    async getAllProfiles(req, res) {
+    async deleteUser(req, res) {
         try {
-            const message = req.flash('Welcome to Users Profile list');
-            const searchQuery = req.query.query;
+            const userId = req.params.id;
 
-            // Base query
-            let query = {};
-
-            if (searchQuery) {
-                // First, find users whose name or email matches
-                const matchingUsers = await UserModel.find({
-                    $or: [
-                        { name: { $regex: searchQuery, $options: 'i' } },
-                        { email: { $regex: searchQuery, $options: 'i' } }
-                    ]
-                }).select('_id');
-
-                // Extract matching user IDs
-                const matchingUserIds = matchingUsers.map(user => user._id);
-                query.user = { $in: matchingUserIds };
+            // Prevent admin from deleting themselves
+            if (userId === req.user._id.toString()) {
+                req.flash('message', "You cannot delete yourself!");
+                return res.redirect('/user-list');
             }
 
-            const profiles = await ProfileModel.find(query)
-                .populate('user', 'name email');
+            const deletedUser = await UserModel.findByIdAndDelete(userId);
 
-            res.render('profiles/list', {
-                title: "Profile List",
-                profiles,
-                user: req.user,
-                message
-            });
-
-        } catch (error) {
-            console.error("List error:", error);
-            req.flash("message", "Failed to load users list");
-            return res.redirect("/admin/profile-list");
-        }
-    }
-    async getAllPost(req, res) {
-        try {
-            const message = req.flash('Welcome to Users Posts list');
-            const searchQuery = req.query.query;
-
-            // Base query
-            let query = {};
-
-            if (searchQuery) {
-                // First, find users whose name or email matches
-                const matchingUsers = await UserModel.find({
-                    $or: [
-                        { name: { $regex: searchQuery, $options: 'i' } },
-                        { email: { $regex: searchQuery, $options: 'i' } }
-                    ]
-                }).select('_id');
-
-                // Extract matching user IDs
-                const matchingUserIds = matchingUsers.map(user => user._id);
-                query.user = { $in: matchingUserIds };
+            if (!deletedUser) {
+                req.flash('message', "User not found");
+                return res.redirect('/user-list');
             }
 
-            const posts = await PostModel.find(query).sort({ date: -1 })
-                .populate('user', 'name email');
-
-            res.render('posts/list', {
-                title: "Post List",
-                posts,
-                user: req.user,
-                message
-            });
-
+            req.flash('message', "User deleted successfully");
+            res.redirect('/user-list');
         } catch (error) {
-            console.error("List error:", error);
-            req.flash("message", "Failed to load post list");
-            return res.redirect("/admin/post-list");
+            console.error("Error deleting user:", error);
+            req.flash('message', "Failed to delete user");
+            res.redirect('/user-list');
         }
-
     }
 
-    async deleteUserData(req, res) {
+    async getusersBlog(req, res) {
         try {
-            const userId = req.user._id;
-
-            // Delete all posts created by the user (assuming you have a PostModel)
-            await PostModel.deleteMany({ user: userId });
-
-            // Delete profile
-            await ProfileModel.findOneAndDelete({ user: userId });
-
-            // Delete user
-            await UserModel.findOneAndDelete({ _id: userId });
-
-            // Redirect or send response
-            return res.redirect('/admin/user-list');
+            const entry = await BlogModel.find().populate("author", "name");
+            const message = req.flash('message');
+            res.render('blog/list', {
+                title: "blog list",
+                message,
+                entry
+            });
         } catch (error) {
-            console.error(error.message);
+            console.error(error);
+            req.flash('message', "Internal server error");
+            res.redirect('/dashboard');
+        }
+    }
+
+
+    async createBlogPage(req, res) {
+        try {
+            const message = req.flash('message', "Time table created ");
+            res.render('blog/add', {
+                title: "User Blog",
+                message
+            })
+        } catch (error) {
+            console.log("error in getting page ", error.message)
+            req.flash('message', "Internal server error");
+        }
+    }
+
+
+    async createBlog(req, res) {
+        try {
+            const { title, content } = req.body;
+
+            if (!title || !content) {
+                return res.status(400).json({
+                    status: false,
+                    message: "All fields are required",
+                });
+            }
+
+            // Ensure user role
+            if (!req.user || req.user.role !== "User") {
+                return res.status(403).json({
+                    status: false,
+                    message: "Access denied. Users only",
+                });
+            }
+
+            const blog = new BlogModel({
+                title,
+                content,
+                author: req.user._id, // always take from logged-in user
+            });
+
+            await blog.save();
+
+            return res.redirect("/blog-list?message=Blog entry created successfully");
+        } catch (error) {
+            console.error("Error creating Blog:", error);
             return res.status(500).json({
-                message: 'Server error: ' + error.message,
+                status: false,
+                message: "Server error while creating Blog",
             });
         }
     }
 
-async getPostById(req, res) {
+    // GET edit page
+async editBlogPage(req, res) {
     try {
-        const id = req.params.id;
-        const post = await PostModel.findById(id);
-        
-        if (!post) {
-            req.flash("message", "Post not found");
-            return res.status(httpStatusCode.NotFound).json({
-                message: "post not exist"
-            });
+        const blog = await BlogModel.findById(req.params.id).populate("author", "name");
+        if (!blog) return res.status(404).send("Blog not found");
+
+        // Only author can edit
+        if (blog.author._id.toString() !== req.user._id.toString()  && req.user.role !== 'Admin') {
+            return res.status(403).render("403"); // or res.status(403).send("Access Denied");
         }
 
-        return res.json(post);
-
-    } catch (error) {
-        console.log(error.message);
-
-        if (error.kind === 'ObjectId') {
-            return res.status(httpStatusCode.NotFound).json({
-                message: "post not exist"
-            });
-        }
-
-        return res.status(httpStatusCode.InternalServerError).json({
-            message: "Something went wrong"
-        });
+        res.render("blog/edit", { blog, user: req.user });
+    } catch (err) {
+        console.error(err);
+        res.status(500).send("Server error");
     }
 }
 
-    
-    async deletePost(req, res) {
+
+    // POST update
+    async updateBlog(req, res) {
         try {
-            const post = await PostModel.findById(req.params.id);
+            const { title, content } = req.body;
 
-            if (!post) {
-                req.flash("message", "Post not found");
-                return res.redirect('/admin/post-list');
-            }
-            if (post.user.toString() !== req.user._id.toString() && req.user.isAdmin !== 'admin') {
-                req.flash("message", "Unauthorized action");
-                return res.redirect('/admin/post-list');
+            if (!title || !content) {
+                return res
+                    .status(400)
+                    .json({ status: false, message: "Title and content are required" });
             }
 
-            await post.deleteOne();
+            // Only allow blog author (or Admin) to update
+            const blog = await BlogModel.findById(req.params.id);
 
-            req.flash("message", "Post deleted successfully");
-            return res.redirect('/admin/post-list');
-        } catch (error) {
-            console.error("Delete Post Error:", error.message);
-            if (error.kind === 'ObjectId') {
-                return res.status(httpStatusCode.NotFound).json({
-                    message: "post not exist"
-                })
+            if (!blog) {
+                return res
+                    .status(404)
+                    .json({ status: false, message: "Blog not found" });
             }
-            req.flash("message", "Error in deleting post");
-            return res.redirect('/admin/post-list');
+
+            if (blog.author.toString() !== req.user._id.toString()  && req.user.role !== 'Admin') {
+                return res
+                    .status(403)
+                    .json({ status: false, message: "Access denied. Not authorized" });
+            }
+
+            await BlogModel.findByIdAndUpdate(
+                req.params.id,
+                { title, content, updatedAt: Date.now() },
+                { new: true }
+            );
+
+            // If using EJS
+            return res.redirect("/blog-list?message=Blog updated successfully");
+
+            // If API only:
+            // return res.json({ status: true, message: "Blog updated successfully" });
+        } catch (err) {
+            console.error("Error updating blog:", err);
+            res.status(500).send("Server error");
         }
     }
+
+
+ 
+ // DELETE blog
+async deleteBlog(req, res) {
+    try {
+        const { id } = req.params;
+
+        // Find the blog first
+        const blog = await BlogModel.findById(id);
+        if (!blog) {
+            return res.status(404).json({ status: false, message: "Blog not found" });
+        }
+
+        // Check ownership: only the author can delete
+        if (blog.author.toString() !== req.user._id.toString() && req.user.role !== 'Admin'){
+            return res.status(403).json({ status: false, message: "Access denied. Not authorized" });
+        }
+
+        await BlogModel.findByIdAndDelete(id);
+
+        // Redirect to blog list
+        res.redirect("/blog-list?message=Blog deleted successfully");
+    } catch (err) {
+        console.error("Error deleting blog:", err);
+        res.status(500).json({ status: false, message: "Server error" });
+    }
+}
+
+ // Get all blogs (Admin view)
+async allBlogsAdmin(req, res) {
+    try {
+        // Fetch all blogs and populate the author name
+        const blogs = await BlogModel.find().populate("author", "name role");
+
+        res.render("blog/admin-list", {
+            entry: blogs,
+            user: req.user, // current logged-in admin
+            message: req.query.message || null
+        });
+    } catch (err) {
+        console.error("Error fetching blogs:", err);
+        res.status(500).send("Server error");
+    }
+}
+ // PUT /blog/update/:id
+async updateBlogAdmin(req, res) {
+    try {
+        const { title, content } = req.body;
+
+        if (!title || !content) {
+            req.flash('message', 'Title and content are required');
+            return res.redirect('back');
+        }
+
+        const blog = await BlogModel.findById(req.params.id);
+        if (!blog) {
+            req.flash('message', 'Blog not found');
+            return res.redirect('/blog-list');
+        }
+
+        // Only author or admin can update
+        if (blog.author.toString() !== req.user._id.toString() && req.user.role !== 'Admin') {
+            req.flash('message', 'Access denied. Not authorized');
+            return res.redirect('/blog-list');
+        }
+
+        blog.title = title;
+        blog.content = content;
+        await blog.save();
+
+        req.flash('message', 'Blog updated successfully');
+        res.redirect('/blog-list');
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Server error');
+    }
+}
+
+// DELETE /blog/delete/:id
+async deleteBlogAdmin(req, res) {
+    try {
+        const blog = await BlogModel.findById(req.params.id);
+        if (!blog) {
+            req.flash('message', 'Blog not found');
+            return res.redirect('/blog-list');
+        }
+
+        // Only author or admin can delete
+        if (blog.author.toString() !== req.user._id.toString() && req.user.role !== 'Admin') {
+            req.flash('message', 'Access denied. Not authorized');
+            return res.redirect('/blog-list');
+        }
+
+        await BlogModel.findByIdAndDelete(req.params.id);
+        req.flash('message', 'Blog deleted successfully');
+        res.redirect('/blog-list');
+    } catch (err) {
+        console.error(err);
+        res.status(500).send('Server error');
+    }
+}
+
+// GET edit page - Admin only
+async editBlogPageAdmin(req, res) {
+    try {
+        const blog = await BlogModel.findById(req.params.id).populate("author", "name");
+        if (!blog) return res.status(404).send("Blog not found");
+
+        // Only Admin can edit
+        if (req.user.role !== "Admin") {
+            return res.status(403).render("403"); // Render a 403 page
+        }
+
+        res.render("blog/edit", { blog, user: req.user });
+    } catch (err) {
+        console.error(err);
+        res.status(500).send("Server error");
+    }
+}
+
+
+
 
 }
 

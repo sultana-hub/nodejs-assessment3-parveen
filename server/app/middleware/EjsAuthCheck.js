@@ -7,21 +7,15 @@ const EjsAuthCheck = (req, res, next) => {
       process.env.JWT_SECRET_KEY,
       (err, decoded) => {
         if (err) {
-          // If token is invalid or expired
-          req.user = null;
-          res.locals.user = null;
-          return next();
+          return res.redirect("/"); // invalid/expired → go login
         }
-
         req.user = decoded;
         res.locals.user = decoded;
         return next();
       }
     );
   } else {
-    req.user = null;
-    res.locals.user = null;
-    return next();
+    return res.redirect("/"); // no token → go login
   }
 };
 
